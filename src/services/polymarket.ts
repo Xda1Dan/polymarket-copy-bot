@@ -1,8 +1,3 @@
-import axios from 'axios';
-
-// Polymarket CLOB API Base URL
-const CLOB_API_URL = 'https://clob.polymarket.com';
-
 export interface PolymarketTrade {
   id: string;
   market: string;
@@ -22,48 +17,58 @@ export interface TraderStats {
   totalTrades: number;
 }
 
-export async function fetchTraderTrades(address: string): Promise<PolymarketTrade[]> {
-  try {
-    // Note: Polymarket CLOB API might have specific endpoints for trades by address
-    // This is a placeholder for the actual API call logic
-    // In a real scenario, we'd use their subgraph or specific CLOB endpoints
-    const response = await axios.get(`${CLOB_API_URL}/trades?maker_address=${address}`);
-    return response.data;
-  } catch (error) {
-    console.error('Error fetching trader trades:', error);
-    // Return mock data for demo purposes if API fails or for simulation
-    return generateMockTrades(address);
+const API = 'https://data-api.polymarket.com';
+
+async function fetchAllClosed(user: string): Promise<any[]> {
+  let all: any[] = [];
+  let offset = 0;
+  while (offset <= 200) {
+    const res = await fetch(`${API}/closed-positions?user=${user}&limit=50&offset=${offset}&sortBy=TIMESTAMP&sortDirection=DESC`);
+    if (!res.ok) break;
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) break;
+    all = all.concat(data);
+    offset += 50;
   }
+  return all.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 }
 
-function generateMockTrades(address: string): PolymarketTrade[] {
-  const sides: ('BUY' | 'SELL')[] = ['BUY', 'SELL'];
-  const markets = [
-    "Will Bitcoin hit $100k in 2024?",
-    "Will Trump win the 2024 election?",
-    "Will Ethereum ETF be approved by May?",
-    "Will Fed cut rates in June?"
-  ];
-
-  return Array.from({ length: 10 }).map((_, i) => ({
-    id: `trade-${i}`,
-    market: markets[Math.floor(Math.random() * markets.length)],
-    asset: "USDC",
-    side: sides[Math.floor(Math.random() * sides.length)],
-    size: (Math.random() * 1000).toFixed(2),
-    price: (Math.random() * 0.9 + 0.05).toFixed(2),
-    timestamp: new Date(Date.now() - i * 3600000).toISOString(),
-    transactionHash: `0x${Math.random().toString(16).slice(2)}`
+export async function fetchTraderTrades(address: string): Promise<PolymarketTrade[]> {
+  const positions = await fetchAllClosed(address);
+  return positions.slice(0, 50).map((pos: any, i: number) => ({
+    id: pos.id || `trade-${i}`,
+    market: pos.title || 'Unknown Market',
+    asset: 'USDC',
+    side: pos.outcomeIndex === 0 ? 'BUY' : 'SELL',
+    size: (pos.totalBought || 0).toFixed(2),
+    price: (pos.avgPrice || 0).toFixed(2),
+    timestamp: new Date((pos.timestamp || 0) * 1000).toISOString(),
+    transactionHash: pos.transactionHash || `0x${Math.random().toString(16).slice(2)}`,
   }));
 }
 
 export async function getTraderStats(address: string): Promise<TraderStats> {
-  // Mocking stats calculation
+  const positions = await fetchAllClosed(address);
+  const now = Math.floor(Date.now() / 1000);
+  const day = 86400;
+
+  let pnl24h = 0, pnl7d = 0, pnl30d = 0, wins = 0, total = 0;
+
+  for (const pos of positions) {
+    const pnl = pos.realizedPnl || 0;
+    const age = now - (pos.timestamp || 0);
+    if (age <= day) pnl24h += pnl;
+    if (age <= 7 * day) pnl7d += pnl;
+    if (age <= 30 * day) pnl30d += pnl;
+    if (pnl > 0) wins++;
+    total++;
+  }
+
   return {
-    pnl24h: Math.random() * 2000 - 500,
-    pnl7d: Math.random() * 5000 - 1000,
-    pnl30d: Math.random() * 15000 - 2000,
-    winRate: 65 + Math.random() * 15,
-    totalTrades: 120 + Math.floor(Math.random() * 50)
+    pnl24h: parseFloat(pnl24h.toFixed(2)),
+    pnl7d: parseFloat(pnl7d.toFixed(2)),
+    pnl30d: parseFloat(pnl30d.toFixed(2)),
+    winRate: total > 0 ? parseFloat(((wins / total) * 100).toFixed(1)) : 0,
+    totalTrades: total,
   };
 }
