@@ -39,6 +39,8 @@ interface BotInstance {
   status: 'active' | 'paused';
   virtualBalance: number;
   initialBalance: number;
+  tradeAmount: number;
+  maxPerMarket: number;
   createdAt: string;
 }
 
@@ -49,7 +51,14 @@ export default function App() {
   const [recentTrades, setRecentTrades] = useState<PolymarketTrade[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAddingBot, setIsAddingBot] = useState(false);
-  const [newBotData, setNewBotData] = useState({ name: '', address: '', balance: '1000' });
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [newBotData, setNewBotData] = useState({ 
+    name: '', 
+    address: '', 
+    balance: '1000',
+    tradeAmount: '50',
+    maxPerMarket: '200'
+  });
 
   const selectedBot = bots.find(b => b.id === selectedBotId);
 
@@ -116,11 +125,19 @@ export default function App() {
       const res = await axios.post('/api/bots', {
         name: newBotData.name,
         traderAddress: newBotData.address,
-        initialBalance: newBotData.balance
+        initialBalance: newBotData.balance,
+        tradeAmount: newBotData.tradeAmount,
+        maxPerMarket: newBotData.maxPerMarket
       });
       setBots([...bots, res.data]);
       setIsAddingBot(false);
-      setNewBotData({ name: '', address: '', balance: '1000' });
+      setNewBotData({ 
+        name: '', 
+        address: '', 
+        balance: '1000',
+        tradeAmount: '50',
+        maxPerMarket: '200'
+      });
       setSelectedBotId(res.data.id);
     } catch (err) {
       console.error('Failed to add bot', err);
@@ -154,36 +171,53 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col font-sans">
       {/* Header */}
-      <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-6 bg-zinc-950/80 backdrop-blur-md sticky top-0 z-40">
+      <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-4 md:px-6 bg-zinc-950/80 backdrop-blur-md sticky top-0 z-40">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="md:hidden p-2 hover:bg-zinc-900 rounded-lg"
+          >
+            <Activity className="w-5 h-5" />
+          </button>
+          <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center shrink-0">
             <Bot className="text-zinc-950 w-5 h-5" />
           </div>
-          <h1 className="text-lg font-semibold tracking-tight">PolySim</h1>
-          <span className="px-2 py-0.5 rounded-full bg-zinc-800 text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Simulation Mode</span>
+          <h1 className="text-lg font-semibold tracking-tight hidden sm:block">PolySim</h1>
+          <span className="px-2 py-0.5 rounded-full bg-zinc-800 text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Sim</span>
         </div>
         
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 md:gap-4">
           <button 
             onClick={() => setIsAddingBot(true)}
-            className="flex items-center gap-2 bg-white text-zinc-950 px-4 py-2 rounded-full text-sm font-medium hover:bg-zinc-200 transition-colors"
+            className="flex items-center gap-2 bg-white text-zinc-950 px-3 md:px-4 py-2 rounded-full text-xs md:text-sm font-medium hover:bg-zinc-200 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            New Bot
+            <span className="hidden xs:inline">New Bot</span>
           </button>
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
         {/* Sidebar */}
-        <aside className="w-72 border-r border-zinc-800 flex flex-col bg-zinc-950">
+        <aside className={cn(
+          "fixed inset-y-0 left-0 z-30 w-72 border-r border-zinc-800 flex flex-col bg-zinc-950 transition-transform duration-300 md:relative md:translate-x-0",
+          isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+        )}>
           <div className="p-4 border-b border-zinc-800">
-            <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4">Your Bots</h2>
-            <div className="space-y-1">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest">Your Bots</h2>
+              <button onClick={() => setIsSidebarOpen(false)} className="md:hidden text-zinc-500">
+                <ChevronRight className="w-4 h-4 rotate-180" />
+              </button>
+            </div>
+            <div className="space-y-1 overflow-y-auto max-h-[calc(100vh-16rem)]">
               {bots.map(bot => (
                 <button
                   key={bot.id}
-                  onClick={() => setSelectedBotId(bot.id)}
+                  onClick={() => {
+                    setSelectedBotId(bot.id);
+                    setIsSidebarOpen(false);
+                  }}
                   className={cn(
                     "w-full flex items-center justify-between p-3 rounded-xl transition-all group",
                     selectedBotId === bot.id 
@@ -193,25 +227,16 @@ export default function App() {
                 >
                   <div className="flex items-center gap-3">
                     <div className={cn(
-                      "w-2 h-2 rounded-full",
+                      "w-2 h-2 rounded-full shrink-0",
                       bot.status === 'active' ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" : "bg-zinc-600"
                     )} />
-                    <div className="text-left">
-                      <p className="text-sm font-medium">{bot.name}</p>
-                      <p className="text-[10px] text-zinc-500 font-mono">{formatAddress(bot.traderAddress)}</p>
+                    <div className="text-left overflow-hidden">
+                      <p className="text-sm font-medium truncate">{bot.name}</p>
+                      <p className="text-[10px] text-zinc-500 font-mono truncate">{formatAddress(bot.traderAddress)}</p>
                     </div>
                   </div>
-                  <ChevronRight className={cn(
-                    "w-4 h-4 text-zinc-600 transition-transform",
-                    selectedBotId === bot.id ? "translate-x-0 opacity-100" : "-translate-x-2 opacity-0 group-hover:opacity-100"
-                  )} />
                 </button>
               ))}
-              {bots.length === 0 && (
-                <div className="text-center py-8">
-                  <p className="text-sm text-zinc-500">No bots deployed</p>
-                </div>
-              )}
             </div>
           </div>
           
@@ -225,39 +250,64 @@ export default function App() {
           </div>
         </aside>
 
+        {/* Overlay for mobile sidebar */}
+        {isSidebarOpen && (
+          <div 
+            className="fixed inset-0 bg-black/50 z-20 md:hidden"
+            onClick={() => setIsSidebarOpen(false)}
+          />
+        )}
+
         {/* Main Content */}
-        <main className="flex-1 overflow-y-auto bg-zinc-950 p-8">
+        <main className="flex-1 overflow-y-auto bg-zinc-950 p-4 md:p-8">
           {selectedBot ? (
-            <div className="max-w-6xl mx-auto space-y-8">
+            <div className="max-w-6xl mx-auto space-y-6 md:space-y-8">
               {/* Bot Header */}
-              <div className="flex items-end justify-between">
+              <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-3 mb-2">
-                    <h2 className="text-3xl font-bold tracking-tight">{selectedBot.name}</h2>
+                    <h2 className="text-2xl md:text-3xl font-bold tracking-tight">{selectedBot.name}</h2>
                     <span className="px-2 py-0.5 rounded-md bg-green-500/10 text-green-500 text-[10px] font-bold uppercase">Active</span>
                   </div>
-                  <div className="flex items-center gap-4 text-zinc-400 text-sm">
+                  <div className="flex flex-wrap items-center gap-3 md:gap-4 text-zinc-400 text-xs md:text-sm">
                     <div className="flex items-center gap-1.5">
                       <User className="w-4 h-4" />
-                      <span className="font-mono">{selectedBot.traderAddress}</span>
+                      <span className="font-mono">{formatAddress(selectedBot.traderAddress)}</span>
                       <button className="hover:text-white"><ExternalLink className="w-3 h-3" /></button>
                     </div>
-                    <div className="w-1 h-1 rounded-full bg-zinc-800" />
+                    <div className="hidden xs:block w-1 h-1 rounded-full bg-zinc-800" />
                     <span>Created {new Date(selectedBot.createdAt).toLocaleDateString()}</span>
                   </div>
                 </div>
                 
-                <div className="flex gap-3">
-                  <button className="p-2.5 rounded-xl border border-zinc-800 hover:bg-zinc-900 transition-colors">
+                <div className="flex gap-2">
+                  <button className="flex-1 md:flex-none p-2.5 rounded-xl border border-zinc-800 hover:bg-zinc-900 transition-colors flex items-center justify-center">
                     <RefreshCw className="w-5 h-5 text-zinc-400" />
                   </button>
                   <button 
                     onClick={() => deleteBot(selectedBot.id)}
-                    className="p-2.5 rounded-xl border border-zinc-800 hover:bg-red-500/10 hover:border-red-500/50 group transition-all"
+                    className="flex-1 md:flex-none p-2.5 rounded-xl border border-zinc-800 hover:bg-red-500/10 hover:border-red-500/50 group transition-all flex items-center justify-center"
                   >
                     <Trash2 className="w-5 h-5 text-zinc-400 group-hover:text-red-500" />
                   </button>
                 </div>
+              </div>
+
+              {/* Risk Management Controls Display */}
+              <div className="glass-card p-4 rounded-2xl flex flex-wrap gap-6 items-center justify-between border-zinc-800/50">
+                <div className="flex items-center gap-4">
+                  <div className="p-2 rounded-lg bg-zinc-800/50">
+                    <Activity className="w-4 h-4 text-zinc-400" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Risk Controls</p>
+                    <div className="flex gap-4 mt-1">
+                      <span className="text-xs text-zinc-300">Amount/Trade: <b className="text-white">{formatCurrency(selectedBot.tradeAmount)}</b></span>
+                      <span className="text-xs text-zinc-300">Max/Market: <b className="text-white">{formatCurrency(selectedBot.maxPerMarket)}</b></span>
+                    </div>
+                  </div>
+                </div>
+                <button className="text-[10px] font-bold text-zinc-400 hover:text-white uppercase tracking-widest transition-colors">Edit Settings</button>
               </div>
 
               {/* Stats Grid */}
@@ -473,21 +523,34 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-[32px] p-8 shadow-2xl"
+              className="relative w-full max-w-lg bg-zinc-900 border border-zinc-800 rounded-[32px] p-6 md:p-8 shadow-2xl overflow-y-auto max-h-[90vh]"
             >
               <h3 className="text-2xl font-bold tracking-tight mb-6">Deploy New Bot</h3>
-              <form onSubmit={handleAddBot} className="space-y-5">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider ml-1">Bot Name</label>
-                  <input 
-                    type="text" 
-                    required
-                    placeholder="e.g. Polymarket Whale"
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-white transition-colors"
-                    value={newBotData.name}
-                    onChange={e => setNewBotData({...newBotData, name: e.target.value})}
-                  />
+              <form onSubmit={handleAddBot} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider ml-1">Bot Name</label>
+                    <input 
+                      type="text" 
+                      required
+                      placeholder="e.g. Whale Alpha"
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-white transition-colors"
+                      value={newBotData.name}
+                      onChange={e => setNewBotData({...newBotData, name: e.target.value})}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider ml-1">Initial Balance (USDC)</label>
+                    <input 
+                      type="number" 
+                      required
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-white transition-colors"
+                      value={newBotData.balance}
+                      onChange={e => setNewBotData({...newBotData, balance: e.target.value})}
+                    />
+                  </div>
                 </div>
+
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider ml-1">Trader Address</label>
                   <input 
@@ -499,16 +562,35 @@ export default function App() {
                     onChange={e => setNewBotData({...newBotData, address: e.target.value})}
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider ml-1">Initial Virtual Balance (USDC)</label>
-                  <input 
-                    type="number" 
-                    required
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-white transition-colors"
-                    value={newBotData.balance}
-                    onChange={e => setNewBotData({...newBotData, balance: e.target.value})}
-                  />
+
+                <div className="p-4 rounded-2xl bg-zinc-950 border border-zinc-800 space-y-4">
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Risk Management</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Trade Amount (USDC)</label>
+                      <input 
+                        type="number" 
+                        required
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-white transition-colors"
+                        value={newBotData.tradeAmount}
+                        onChange={e => setNewBotData({...newBotData, tradeAmount: e.target.value})}
+                      />
+                      <p className="text-[9px] text-zinc-600 ml-1">Amount to invest per trade</p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold text-zinc-400 uppercase ml-1">Max Per Market (USDC)</label>
+                      <input 
+                        type="number" 
+                        required
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-white transition-colors"
+                        value={newBotData.maxPerMarket}
+                        onChange={e => setNewBotData({...newBotData, maxPerMarket: e.target.value})}
+                      />
+                      <p className="text-[9px] text-zinc-600 ml-1">Max exposure per single market</p>
+                    </div>
+                  </div>
                 </div>
+
                 <div className="pt-4 flex gap-3">
                   <button 
                     type="button"

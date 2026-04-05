@@ -22,6 +22,8 @@ async function startServer() {
       status: "active",
       virtualBalance: 10000,
       initialBalance: 10000,
+      tradeAmount: 100,
+      maxPerMarket: 500,
       createdAt: new Date().toISOString(),
     }
   ];
@@ -32,7 +34,7 @@ async function startServer() {
   });
 
   app.post("/api/bots", (req, res) => {
-    const { name, traderAddress, initialBalance } = req.body;
+    const { name, traderAddress, initialBalance, tradeAmount, maxPerMarket } = req.body;
     const newBot = {
       id: Math.random().toString(36).substring(7),
       name,
@@ -40,6 +42,8 @@ async function startServer() {
       status: "active",
       virtualBalance: Number(initialBalance) || 1000,
       initialBalance: Number(initialBalance) || 1000,
+      tradeAmount: Number(tradeAmount) || 50,
+      maxPerMarket: Number(maxPerMarket) || 200,
       createdAt: new Date().toISOString(),
     };
     bots.push(newBot);
