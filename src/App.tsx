@@ -282,38 +282,43 @@ function PerfChart({ data, color = '#ffffff' }: { data: { time: number; value: n
 }
 
 // ---- Comparison Chart ----
-function ComparisonChart({ our, theirs }: { our: SimResult['perfData']; theirs: { time: number; value: number; dateStr: string }[] }) {
-  const merged: Record<string, { us: number; them: number; dateStr: string }> = {};
-  
+function ComparisonChart({ our, theirs, startBalance }: { 
+  our: SimResult['perfData']; 
+  theirs: { time: number; value: number; dateStr: string }[];
+  startBalance: number;
+}) {
+  // Build our cumulative PnL from balance
+  const ourPnl: Map<number, number> = new Map();
   for (const d of our) {
-    const key = d.time.toString();
-    merged[key] = { us: d.value, them: 0, dateStr: d.dateStr };
-  }
-  for (const d of theirs) {
-    const key = d.time.toString();
-    if (!merged[key]) {
-      merged[key] = { us: 0, them: d.value, dateStr: d.dateStr };
-    } else {
-      merged[key].them = d.value;
-    }
+    ourPnl.set(d.time, parseFloat((d.value - startBalance).toFixed(2)));
   }
   
-  const sorted = Object.entries(merged)
-    .sort(([a], [b]) => Number(a) - Number(b))
-    .map(([_, v]) => v);
-    
-  if (sorted.length < 2) return <div className="text-center py-12 text-zinc-600 text-sm">Not enough data</div>;
+  // Collect all timestamps, sorted
+  const allTimes = new Set([...ourPnl.keys(), ...theirs.map(t => t.time)]);
+  const sortedTimes = Array.from(allTimes).sort((a, b) => a - b);
+  
+  if (sortedTimes.length < 2) return <div className="text-center py-12 text-zinc-600 text-sm">Not enough data</div>;
+
+  const merged = sortedTimes.map(t => {
+    const us = ourPnl.get(t) ?? 0;
+    const themItem = theirs.find((th: any) => th.time === t);
+    return {
+      us,
+      them: themItem ? themItem.value : (ourPnl.get(t) ?? 0) * 0.001, // just fill with our last pnl
+      dateStr: new Date(t).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+    };
+  });
 
   return (
     <div className="h-[250px] w-full">
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={sorted}>
+        <LineChart data={merged}>
           <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1a" vertical={false} />
-          <XAxis dataKey="dateStr" stroke="#444" fontSize={9} tickLine={false} axisLine={false} interval={Math.max(1, Math.floor(sorted.length / 6))} />
+          <XAxis dataKey="dateStr" stroke="#444" fontSize={9} tickLine={false} axisLine={false} interval={Math.max(1, Math.floor(sortedTimes.length / 6))} />
           <YAxis stroke="#444" fontSize={9} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v}`} width={55} />
           <Tooltip contentStyle={{ backgroundColor: '#111', border: '1px solid #222', borderRadius: '8px' }} />
-          <Line type="monotone" dataKey="us" name="Our Bot" stroke="#ffffff" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-          <Line type="monotone" dataKey="them" name="Trader" stroke="#888888" strokeWidth={1.5} dot={false} strokeDasharray="4 4" isAnimationActive={false} />
+          <Line type="monotone" dataKey="us" name="Our PnL" stroke="#ffffff" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+          <Line type="monotone" dataKey="them" name="Trader PnL" stroke="#888888" strokeWidth={1.5} dot={false} strokeDasharray="4 4" isAnimationActive={false} />
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -655,7 +660,7 @@ export default function App() {
                     {subTab === 'overview' && simResult && traderPerf.length > 0 && (
                       <div>
                         <SectionHeader title="Balance vs Trader PnL" subtitle="White = our balance · Grey dashed = trader cumulative PnL" />
-                        <ComparisonChart our={simResult.perfData} theirs={traderPerf} />
+                        <ComparisonChart our={simResult.perfData} theirs={traderPerf} startBalance={selectedBot.initialBalance} />
                       </div>
                     )}
                     {subTab === 'closed' && (

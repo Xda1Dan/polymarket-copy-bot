@@ -169,7 +169,7 @@ export async function getTraderClosedPositions(address: string, limit = 100): Pr
   }));
 }
 
-// Build cumulative PnL chart data from closed positions
+// Build cumulative PnL chart (trader's running total of realized PnL)
 export async function getTraderPerfData(address: string): Promise<{ time: number; value: number; dateStr: string }[]> {
   const positions = await fetchPaginated('closed-positions', address);
   // Sort oldest first
@@ -199,15 +199,13 @@ export async function runSimulation(
   maxPerMarket: number
 ): Promise<SimResult> {
   const positions = await fetchPaginated('closed-positions', address);
-  // Sort oldest first for correct replay
+  // Sort oldest first
   positions.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
   let balance = initialBalance;
   const marketExposure: Record<string, number> = {};
   const trades: SimTrade[] = [];
-  const perfData: { time: number; value: number; dateStr: string }[] = [{
-    time: 0, value: initialBalance, dateStr: 'start',
-  }];
+  const perfData: { time: number; value: number; dateStr: string }[] = [];
   const now = Date.now() / 1000;
   let wins = 0, losses = 0;
 
@@ -218,13 +216,14 @@ export async function runSimulation(
       ? (p.realizedPnl / p.totalBought) * 100 : 0;
     const exposure = marketExposure[mKey] || 0;
     const ts = p.timestamp || 0;
-    const age = now - ts;
 
     if (exposure >= maxPerMarket || balance < tradeAmount) continue;
 
-    balance -= tradeAmount;
     marketExposure[mKey] = exposure + tradeAmount;
 
+    // realizedPnl is the total dollar PnL on the trader's position.
+    // ROI% = (realizedPnl / totalBought) * 100
+    // Our profit = our bet amount * that ROI%
     const profit = tradeAmount * (roiPct / 100);
     balance += profit;
     marketExposure[mKey] = Math.max(0, (marketExposure[mKey] || 0) - tradeAmount);
@@ -270,7 +269,7 @@ export async function runSimulation(
     losses,
     winRate: total > 0 ? parseFloat(((wins / total) * 100).toFixed(1)) : 0,
     trades,
-    openPositions: [], // Sim only tracks closed
+    openPositions: [],
     perfData,
   };
 }
