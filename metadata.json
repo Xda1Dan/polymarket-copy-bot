@@ -1,0 +1,5 @@
+{
+  "name": "PolySim: Copy Trade Bot",
+  "description": "A sleek, simulated Polymarket copy trading dashboard. Monitor top traders, track real-time PnL, and simulate automated strategies without real funds.",
+  "requestFramePermissions": []
+}
