@@ -1,43 +1,85 @@
-// ---- Types ----
-export interface PolymarketPosition {
-  id: string;
-  title: string;
-  outcomeIndex: number;
-  conditionId: string;
-  size: number;
-  avgPrice: number;
-  realizedPnl: number;
-  unrealizedPnl: number;
-  timestamp: number;
-  closed: boolean;
-  currentPrice?: number;
-  imageUrl?: string;
-  cashPnl?: number;
-  percentPnl?: number;
-}
+// ================================================================
+// Polymarket Data API — client service
+// ================================================================
+// Base: https://data-api.polymarket.com
+// All endpoints are public (no auth needed)
+//
+// Key endpoints:
+//   GET /closed-positions?user=&limit=&offset=&sortBy=TIMESTAMP
+//   GET /positions?user=&limit=...
+//   GET /trades?user=&limit=&after_timestamp=&side=BUY
+//   GET /activity?user=&limit=&after_timestamp=
+//   GET /leaderboard/rankings - top traders
+//
+// WebSocket (ws-subscriptions-clob.polymarket.com/ws/market)
+//   Streams market-level data (orderbook, last_trade_price) by asset_id.
+//   Cannot filter by user address. Requires knowing every token_id upfront.
+//   NOT usable for "watch this trader" use case without subscribing to
+//   500+ active token_ids — impractical and hits connection limits.
+//
+// Real-time tracking of another trader = poll /closed-positions?after_timestamp at 3-5s
+// ================================================================
 
-export interface PolymarketTrade {
-  id: string;
+export type ChartPeriod = '24h' | '7d' | '30d' | 'all';
+
+// ---- Raw types ----
+export interface RawClosedPosition {
+  conditionId: string;
   title: string;
-  side: string;
+  slug: string;
+  icon: string;
   outcome: string;
   outcomeIndex: number;
+  avgPrice: number;
+  totalBought: number;
+  realizedPnl: number;
+  curPrice: number;
+  timestamp: number;
+  endDate: string;
+}
+
+export interface RawOpenPosition {
+  conditionId: string;
+  title: string;
+  slug: string;
+  icon: string;
+  outcome: string;
+  outcomeIndex: number;
+  avgPrice: number;
+  size: number;
+  totalBought: number;
+  realizedPnl: number;
+  unrealizedPnl?: number;
+  cashPnl?: number;
+  curPrice: number;
+  currentValue: number;
+  percentPnl: number;
+  timestamp: number;
+  redeemable: boolean;
+}
+
+export interface RawTrade {
+  proxyWallet: string;
+  side: string;
+  asset: string;
   conditionId: string;
   size: number;
   price: number;
   timestamp: number;
-  transactionHash: string;
-  name: string;
+  title: string;
   slug: string;
-}
-
-export interface TraderProfile {
-  address: string;
+  icon: string;
+  eventSlug: string;
+  outcome: string;
+  outcomeIndex: number;
   name: string;
   pseudonym: string;
   profileImage: string;
+  profileImageOptimized: string;
+  transactionHash: string;
 }
 
+// ---- Clean types ----
 export interface TraderStats {
   realizedPnl24h: number;
   realizedPnl7d: number;
@@ -46,6 +88,7 @@ export interface TraderStats {
   totalTrades: number;
   wins: number;
   losses: number;
+  breakeven: number;
   winRate: number;
   avgPnlPerTrade: number;
   biggestWin: number;
@@ -53,18 +96,18 @@ export interface TraderStats {
   lastTradeTs: number;
 }
 
+export interface PerfPoint {
+  time: number;
+  value: number;
+  label: string;
+  ts: number; // raw seconds for filtering
+}
+
 export interface SimResult {
   balance: number;
-  pnl24h: number;
-  pnl7d: number;
-  pnl30d: number;
-  pnlAll: number;
-  totalTrades: number;
-  wins: number;
-  losses: number;
-  winRate: number;
   trades: SimTrade[];
-  perfData: { time: number; value: number; dateStr: string }[];
+  perfData: PerfPoint[];
+  stats: { totalTrades: number; wins: number; losses: number; winRate: number; pnlAll: number };
 }
 
 export interface SimTrade {
@@ -75,228 +118,231 @@ export interface SimTrade {
   roi: number;
   profit: number;
   balanceAfter: number;
-  time: number;
+  timeS: number;
   dateStr: string;
 }
 
-export interface LiveTrade {
+export interface OpenPosition {
   id: string;
   title: string;
-  side: 'YES' | 'NO';
-  amount: number;
-  roi: number;
-  profit: number;
-  balanceAfter: number;
-  time: number;
+  icon: string;
+  side: string;
+  size: number;
+  avgPrice: number;
+  currentPrice: number;
+  cashPnl: number;
+  percentPnl: number;
+  currentValue: number;
+  redeemable: boolean;
+}
+
+export interface ClosedPosition {
+  id: string;
+  title: string;
+  icon: string;
+  side: string;
+  size: number;
+  avgPrice: number;
+  realizedPnl: number;
+  timestamp: number;
   dateStr: string;
 }
 
-export interface LiveState {
-  balance: number;
-  trades: LiveTrade[];
-  totalWins: number;
-  totalLosses: number;
-  _exposure?: Record<string, number>;
+// ---- HTTP helpers ----
+const BASE = 'https://data-api.polymarket.com';
+
+async function getJson(url: string): Promise<any> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} → ${res.status}`);
+  return res.json();
 }
 
-export type ChartPeriod = '24h' | '7d' | '30d' | 'all';
-
-// ---- API ----
-const API = 'https://data-api.polymarket.com';
-
-// In-memory cache for closed positions
-const cacheMap = new Map<string, { data: any[]; ts: number }>();
-const CACHE_TTL = 5 * 60 * 1000; // 5 min
-
-function getCacheKey(user: string, ep: string) {
-  return `pm_${ep}_${user}`;
-}
-
-function getCached(address: string, ep: string): any[] | null {
-  const entry = cacheMap.get(getCacheKey(address, ep));
-  if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.data;
-  return null;
-}
-
-function setCache(address: string, ep: string, data: any[]) {
-  cacheMap.set(getCacheKey(address, ep), { data, ts: Date.now() });
-}
-
-export function clearCache(address: string) {
-  for (const key of cacheMap.keys()) {
-    if (key.endsWith(address)) cacheMap.delete(key);
-  }
-}
-
-async function fetchPaginated(endpoint: string, user: string, cached = true): Promise<any[]> {
-  if (cached) {
-    const c = getCached(user, endpoint);
-    if (c) return c;
-  }
-
+async function fetchPaginated(endpoint: string, user: string): Promise<any[]> {
   let all: any[] = [];
   let offset = 0;
   for (let page = 0; page < 40; page++) {
-    const url = `${API}/${endpoint}?user=${user}&limit=50&offset=${offset}&sortBy=TIMESTAMP&sortDirection=DESC`;
-    try {
-      const res = await fetch(url);
-      if (!res.ok) break;
-      const data = await res.json();
-      const items = Array.isArray(data) ? data : (data.trades || data.data || []);
-      if (!items.length) break;
-      all = all.concat(items);
-      if (items.length < 50) break;
-      offset += 50;
-    } catch { break; }
+    const url = `${BASE}/${endpoint}?user=${user}&limit=50&offset=${offset}&sortBy=TIMESTAMP&sortDirection=DESC`;
+    const data = await getJson(url);
+    const items = Array.isArray(data) ? data : [];
+    if (!items.length) break;
+    all = all.concat(items);
+    if (items.length < 50) break;
+    offset += 50;
   }
-  if (cached) setCache(user, endpoint, all);
   return all;
 }
 
-// ---- Trader Lookup (just check if address has any activity) ----
-export async function lookupTrader(address: string): Promise<TraderProfile> {
-  try {
-    const res = await fetch(`${API}/trades?user=${address}&limit=1`);
-    if (!res.ok) return { address, name: '', pseudonym: '', profileImage: '' };
-    const data = await res.json();
-    const items = Array.isArray(data) ? data : (data.trades || []);
-    if (!items.length) return { address, name: '', pseudonym: '', profileImage: '' };
-    const t = items[0];
-    return {
-      address,
-      name: t.name || '',
-      pseudonym: t.pseudonym || '',
-      profileImage: t.profileImageOptimized || t.profileImage || '',
-    };
-  } catch { return { address, name: '', pseudonym: '', profileImage: '' }; }
+// ---- Caching ----
+interface CacheEntry<T> { data: T; ts: number; }
+const _cache = new Map<string, CacheEntry<any>>();
+const TTL_5M = 300_000;
+
+function cached<T>(key: string, fn: () => Promise<T>, ttl = TTL_5M): Promise<T> {
+  const hit = _cache.get(key);
+  if (hit && Date.now() - hit.ts < ttl) return Promise.resolve(hit.data);
+  return fn().then(d => { _cache.set(key, { data: d, ts: Date.now() }); return d; });
 }
 
-// ---- Real-Time Trades Feed ----
-export async function fetchRecentClosedPositions(
-  address: string,
-  limit = 20,
-  afterTs?: number,
-): Promise<any[]> {
-  let url = `${API}/closed-positions?user=${address}&limit=${limit}&sortBy=TIMESTAMP&sortDirection=DESC`;
+export function cacheKey(user: string) { return `closed_${user}`; }
+export function invalidateCache(user: string) {
+  for (const k of _cache.keys()) { if (k.includes(user)) _cache.delete(k); }
+}
+
+// ---- Public API ----
+
+export async function fetchClosedPositions(user: string, cached = true): Promise<RawClosedPosition[]> {
+  const key = `closed_${user}`;
+  if (cached) {
+    return cached(key, () => fetchPaginated('closed-positions', user));
+  }
+  return fetchPaginated('closed-positions', user);
+}
+
+export async function fetchOpenPositions(user: string): Promise<RawOpenPosition[]> {
+  const positions = await fetchPaginated('positions', user);
+  return positions.filter((p: any) => p.size && p.size > 0);
+}
+
+export async function fetchRecentTrades(user: string, afterTs?: number): Promise<RawTrade[]> {
+  let url = `${BASE}/trades?user=${user}&limit=10&sortBy=TIMESTAMP`;
   if (afterTs) url += `&after_timestamp=${afterTs}`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const data = await res.json();
-  return Array.isArray(data) ? data : (data.positions || data.data || []);
+  const data = await getJson(url);
+  return Array.isArray(data) ? data : [];
 }
 
-// ---- Trader Data ----
-export async function getTraderStats(address: string): Promise<TraderStats> {
-  const positions = await fetchPaginated('closed-positions', address);
-  const now = Date.now() / 1000;
+/** Quick validation — does this address have any trading history? */
+export async function addressExists(user: string): Promise<boolean> {
+  try {
+    const data = await getJson(`${BASE}/trades?user=${user}&limit=1`);
+    return Array.isArray(data) && data.length > 0;
+  } catch { return false; }
+}
 
+// ---- Formatters ----
+
+function lithuanianDate(ts: number, hours = false): string {
+  const d = new Date(ts * 1000);
+  const opts: Intl.DateTimeFormatOptions = hours
+    ? { timeZone: 'Europe/Vilnius', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }
+    : { timeZone: 'Europe/Vilnius', day: '2-digit', month: 'short' };
+  return d.toLocaleDateString('en-GB', opts);
+}
+
+function sideName(outcomeIndex: number): 'YES' | 'NO' {
+  return outcomeIndex === 0 ? 'YES' : 'NO';
+}
+
+// ---- Trader Stats ----
+export async function getTraderStats(user: string): Promise<TraderStats> {
+  const positions = await fetchClosedPositions(user);
+  const now = Math.floor(Date.now() / 1000);
+  
   let pnl24 = 0, pnl7 = 0, pnl30 = 0, pnlAll = 0;
-  let wins = 0, losses = 0, biggestWin = 0, biggestLoss = 0;
-  let lastTradeTs = 0;
+  let wins = 0, losses = 0, breakeven = 0;
+  let biggestWin = 0, biggestLoss = 0, lastTradeTs = 0;
 
   for (const p of positions) {
     const pnl = p.realizedPnl || 0;
     const ts = p.timestamp || 0;
     if (ts > lastTradeTs) lastTradeTs = ts;
-    if (pnl > 0) { wins++; biggestWin = Math.max(biggestWin, pnl); }
-    else if (pnl < 0) { losses++; biggestLoss = Math.min(biggestLoss, pnl); }
+    
     pnlAll += pnl;
     if (now - ts <= 86400) pnl24 += pnl;
     if (now - ts <= 604800) pnl7 += pnl;
     if (now - ts <= 2592000) pnl30 += pnl;
+    
+    if (pnl > 0.01) { wins++; biggestWin = Math.max(biggestWin, pnl); }
+    else if (pnl < -0.01) { losses++; biggestLoss = Math.min(biggestLoss, pnl); }
+    else { breakeven++; }
   }
 
-  const total = wins + losses;
+  const total = wins + losses + breakeven;
   return {
-    realizedPnl24h: parseFloat(pnl24.toFixed(2)),
-    realizedPnl7d: parseFloat(pnl7.toFixed(2)),
-    realizedPnl30d: parseFloat(pnl30.toFixed(2)),
-    realizedPnlAll: parseFloat(pnlAll.toFixed(2)),
-    totalTrades: total, wins, losses,
-    winRate: total > 0 ? parseFloat(((wins / total) * 100).toFixed(1)) : 0,
-    avgPnlPerTrade: total > 0 ? parseFloat((pnlAll / total).toFixed(2)) : 0,
-    biggestWin: parseFloat(biggestWin.toFixed(2)),
-    biggestLoss: parseFloat(biggestLoss.toFixed(2)),
+    realizedPnl24h: +pnl24.toFixed(2),
+    realizedPnl7d: +pnl7.toFixed(2),
+    realizedPnl30d: +pnl30.toFixed(2),
+    realizedPnlAll: +pnlAll.toFixed(2),
+    totalTrades: total, wins, losses, breakeven,
+    winRate: total > 0 ? +((wins / total) * 100).toFixed(1) : 0,
+    avgPnlPerTrade: total > 0 ? +(pnlAll / total).toFixed(2) : 0,
+    biggestWin: +biggestWin.toFixed(2),
+    biggestLoss: +biggestLoss.toFixed(2),
     lastTradeTs,
   };
 }
 
-export async function getTraderOpenPositions(address: string): Promise<PolymarketPosition[]> {
-  const positions = await fetchPaginated('positions', address);
-  return positions.filter((p: any) => p.size > 0).map((p: any) => ({
-    id: `${p.conditionId || 'pos'}-${p.outcomeIndex ?? ''}`,
-    title: p.title || 'Unknown',
-    outcomeIndex: p.outcomeIndex ?? -1,
-    conditionId: p.conditionId || '',
-    size: p.size || 0,
-    avgPrice: p.avgPrice || 0,
-    realizedPnl: p.realizedPnl || 0,
-    unrealizedPnl: p.cashPnl || 0,
-    timestamp: p.timestamp || 0,
-    closed: false,
-    currentPrice: p.curPrice || 0,
-    imageUrl: p.icon || '',
-    cashPnl: p.cashPnl,
-    percentPnl: p.percentPnl,
-  }));
-}
-
-export async function getTraderClosedPositions(address: string, limit = 100): Promise<PolymarketPosition[]> {
-  const positions = await fetchPaginated('closed-positions', address);
-  return positions.slice(0, limit).map((p: any) => ({
-    id: `${p.conditionId || 'cls'}-${p.timestamp || ''}`,
-    title: p.title || 'Unknown',
-    outcomeIndex: p.outcomeIndex ?? -1,
-    conditionId: p.conditionId || '',
-    size: p.totalBought || 0,
-    avgPrice: p.avgPrice || 0,
-    realizedPnl: p.realizedPnl || 0,
-    unrealizedPnl: 0,
-    timestamp: p.timestamp || 0,
-    closed: true,
-    imageUrl: p.icon || '',
-  }));
-}
-
-export async function getTraderPerfData(
-  address: string,
-  period: ChartPeriod = 'all',
-): Promise<{ time: number; value: number; dateStr: string }[]> {
-  const positions = await fetchPaginated('closed-positions', address);
+// ---- Cumulative PnL Chart Data ----
+export async function getPerfData(user: string, period: ChartPeriod): Promise<PerfPoint[]> {
+  const positions = await fetchClosedPositions(user);
   positions.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
   const now = Math.floor(Date.now() / 1000);
   const window = period === '24h' ? 86400 : period === '7d' ? 604800 : period === '30d' ? 2592000 : Infinity;
 
   let cumulative = 0;
-  const data: { time: number; value: number; dateStr: string }[] = [];
+  const data: PerfPoint[] = [];
 
   for (const p of positions) {
     const ts = p.timestamp || 0;
     if (now - ts > window) continue;
     cumulative += p.realizedPnl || 0;
-    const d = new Date(ts * 1000);
+    
+    const hrs = period === '24h';
     data.push({
       time: ts * 1000,
-      value: parseFloat(cumulative.toFixed(2)),
-      dateStr: period === '24h'
-        ? d.toLocaleTimeString('en-GB', { timeZone: 'Europe/Vilnius', hour: '2-digit', minute: '2-digit' })
-        : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+      value: +cumulative.toFixed(2),
+      label: hrs
+        ? new Date(ts * 1000).toLocaleTimeString('en-GB', { timeZone: 'Europe/Vilnius', hour: '2-digit', minute: '2-digit' })
+        : new Date(ts * 1000).toLocaleDateString('en-GB', { timeZone: 'Europe/Vilnius', day: '2-digit', month: 'short' }),
+      ts,
     });
   }
 
   return data;
 }
 
+// ---- Position Lists ----
+export async function getPositionsList(user: string): Promise<OpenPosition[]> {
+  const raw = await fetchOpenPositions(user);
+  return raw.map((p: any) => ({
+    id: `${p.conditionId}-${p.outcomeIndex}`,
+    title: p.title || 'Unknown',
+    icon: p.icon || '',
+    side: sideName(p.outcomeIndex),
+    size: p.size || 0,
+    avgPrice: p.avgPrice || 0,
+    currentPrice: p.curPrice || 0,
+    cashPnl: +(p.cashPnl || 0),
+    percentPnl: +(p.percentPnl || 0),
+    currentValue: +(p.currentValue || 0),
+    redeemable: !!p.redeemable,
+  }));
+}
+
+export async function getClosedList(user: string, limit = 100): Promise<ClosedPosition[]> {
+  const raw = await fetchClosedPositions(user);
+  return raw.slice(0, limit).map((p: any) => ({
+    id: `${p.conditionId}-${p.timestamp}`,
+    title: p.title || 'Unknown',
+    icon: p.icon || '',
+    side: sideName(p.outcomeIndex),
+    size: +(p.totalBought || 0),
+    avgPrice: p.avgPrice || 0,
+    realizedPnl: +(p.realizedPnl || 0),
+    timestamp: p.timestamp || 0,
+    dateStr: lithuanianDate(p.timestamp, true),
+  }));
+}
+
 // ---- Historical Simulation ----
-export async function runHistoricalSimulation(
-  address: string,
+export async function simulateHistory(
+  user: string,
   initialBalance: number,
   tradeAmount: number,
   maxPerMarket: number,
   tradeLimit?: number,
 ): Promise<SimResult> {
-  const positions = await fetchPaginated('closed-positions', address);
+  const positions = await fetchClosedPositions(user);
   positions.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
   let limited = positions;
@@ -305,115 +351,206 @@ export async function runHistoricalSimulation(
   }
 
   let balance = initialBalance;
-  const marketExposure: Record<string, number> = {};
+  const exposure: Record<string, number> = {};
   const trades: SimTrade[] = [];
-  const perfData: { time: number; value: number; dateStr: string }[] = [];
+  const perf: PerfPoint[] = [];
   let wins = 0, losses = 0;
 
   for (const p of limited) {
-    const mKey = p.conditionId || `pos-${trades.length}`;
-    const side = p.outcomeIndex === 0 ? 'YES' : 'NO';
-    const roiPct = p.totalBought && p.totalBought > 0
-      ? (p.realizedPnl / p.totalBought) * 100 : 0;
-    const exposure = marketExposure[mKey] || 0;
-    const ts = p.timestamp || 0;
+    const key = p.conditionId || `x${trades.length}`;
+    const roi = p.totalBought > 0 ? (p.realizedPnl / p.totalBought) * 100 : 0;
+    const exp = exposure[key] || 0;
+    if (exp >= maxPerMarket || balance < tradeAmount) continue;
 
-    if (exposure >= maxPerMarket || balance < tradeAmount) continue;
-
-    marketExposure[mKey] = exposure + tradeAmount;
-    const profit = tradeAmount * (roiPct / 100);
+    exposure[key] = exp + tradeAmount;
+    const profit = tradeAmount * (roi / 100);
     balance += profit;
-    marketExposure[mKey] = Math.max(0, (marketExposure[mKey] || 0) - tradeAmount);
+    exposure[key] = Math.max(0, exposure[key] - tradeAmount);
 
-    if (profit > 0) wins++; else if (profit < 0) losses++;
+    if (profit > 0.001) wins++;
+    else if (profit < -0.001) losses++;
 
+    const ts = p.timestamp || 0;
     const d = new Date(ts * 1000);
-    const dateStr = d.toLocaleDateString('en-GB', {
-      day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
-    });
+    const dateStr = d.toLocaleDateString('en-GB', { timeZone: 'Europe/Vilnius', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 
     trades.push({
-      id: `sim-${trades.length}`,
-      title: p.title || 'Unknown',
-      side, amount: tradeAmount,
-      roi: parseFloat(roiPct.toFixed(1)),
-      profit: parseFloat(profit.toFixed(2)),
-      balanceAfter: parseFloat(balance.toFixed(2)),
-      time: ts, dateStr,
+      id: `sim${trades.length}`,
+      title: p.title || '?',
+      side: sideName(p.outcomeIndex),
+      amount: tradeAmount,
+      roi: +roi.toFixed(1),
+      profit: +profit.toFixed(2),
+      balanceAfter: +balance.toFixed(2),
+      timeS: ts,
+      dateStr,
     });
 
-    perfData.push({
+    perf.push({
       time: ts * 1000,
-      value: parseFloat(balance.toFixed(2)),
-      dateStr: d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+      value: +balance.toFixed(2),
+      label: d.toLocaleDateString('en-GB', { timeZone: 'Europe/Vilnius', day: '2-digit', month: 'short' }),
+      ts,
     });
   }
 
-  const now = Date.now() / 1000;
-  const total = wins + losses;
-  const pnl24 = trades.filter(t => now - t.time <= 86400).reduce((s, t) => s + t.profit, 0);
-  const pnl7 = trades.filter(t => now - t.time <= 604800).reduce((s, t) => s + t.profit, 0);
-  const pnl30 = trades.filter(t => now - t.time <= 2592000).reduce((s, t) => s + t.profit, 0);
-  const pnlAll = trades.reduce((s, t) => s + t.profit, 0);
-
   return {
-    balance: parseFloat(balance.toFixed(2)),
-    pnl24h: parseFloat(pnl24.toFixed(2)), pnl7d: parseFloat(pnl7.toFixed(2)),
-    pnl30d: parseFloat(pnl30.toFixed(2)), pnlAll: parseFloat(pnlAll.toFixed(2)),
-    totalTrades: total, wins, losses,
-    winRate: total > 0 ? parseFloat(((wins / total) * 100).toFixed(1)) : 0,
-    trades, perfData,
+    balance: +balance.toFixed(2),
+    trades,
+    perfData: perf,
+    stats: {
+      totalTrades: wins + losses,
+      wins, losses,
+      winRate: (wins + losses) > 0 ? +((wins / (wins + losses)) * 100).toFixed(1) : 0,
+      pnlAll: +trades.reduce((s, t) => s + t.profit, 0).toFixed(2),
+    },
   };
 }
 
-// ---- Live Copy Trading ----
+export function clearCache(user: string) { invalidateCache(user); }
+
+export type PolymarketPosition = OpenPosition;
+
+export interface LiveState {
+  balance: number;
+  trades: SimTrade[];
+  totalWins: number;
+  totalLosses: number;
+  _exposure: Record<string, number>;
+}
+
+export function getLiveStats(live: LiveState) {
+  const trades = live.trades;
+  const wins = trades.filter(t => t.profit > 0.001).length;
+  const losses = trades.filter(t => t.profit < -0.001).length;
+  const pnlAll = trades.reduce((s, t) => s + t.profit, 0);
+  const now = Date.now() / 1000;
+  const pnl24h = trades.filter(t => now - t.timeS < 86400).reduce((s, t) => s + t.profit, 0);
+  return {
+    balance: live.balance,
+    pnlAll: +pnlAll.toFixed(2),
+    pnl24h: +pnl24h.toFixed(2),
+    totalTrades: trades.length,
+    wins, losses,
+    winRate: trades.length > 0 ? +((wins / trades.length) * 100).toFixed(1) : 0,
+  };
+}
+
+export async function lookupTrader(address: string): Promise<{ address: string; name: string; pseudonym: string }> {
+  try {
+    const data = await getJson(`${BASE}/trades?user=${address}&limit=1`);
+    if (Array.isArray(data) && data.length > 0) {
+      return { address, name: data[0]?.pseudonym || '', pseudonym: data[0]?.pseudonym || '' };
+    }
+  } catch { /* ignore */ }
+  return { address, name: '', pseudonym: '' };
+}
+
+export async function fetchRecentClosedPositions(user: string, limit = 20, afterTs?: number) {
+  const res = await getJson(`${BASE}/closed-positions?user=${user}&limit=${limit}&sortBy=TIMESTAMP&sortDirection=DESC`);
+  const items = Array.isArray(res) ? res : [];
+  const filtered = afterTs ? items.filter((p: any) => (p.timestamp || 0) > afterTs) : items;
+  return filtered.map((p: any) => ({
+    conditionId: p.conditionId || '',
+    title: p.title || '?',
+    outcomeIndex: p.outcomeIndex ?? -1,
+    totalBought: +(p.totalBought || 0),
+    realizedPnl: +(p.realizedPnl || 0),
+    timestamp: p.timestamp || 0,
+  }));
+}
+
+export async function getTraderOpenPositions(user: string): Promise<OpenPosition[]> {
+  return getPositionsList(user);
+}
+
+export async function getTraderClosedPositions(user: string, limit = 100): Promise<ClosedPosition[]> {
+  return getClosedList(user, limit);
+}
+
+export async function getTraderPerfData(user: string, period: ChartPeriod): Promise<PerfPoint[]> {
+  return getPerfData(user, period);
+}
+
+export async function runHistoricalSimulation(user: string, initial: number, tradeAmt: number, max: number, limit?: number): Promise<{
+  balance: number; trades: SimTrade[]; perfData: PerfPoint[];
+  totalTrades: number; wins: number; losses: number; winRate: number; pnlAll: number; pnl24h: number;
+}> {
+  const result = await simulateHistory(user, initial, tradeAmt, max, limit);
+  const now = Date.now() / 1000;
+  const pnl24h = result.trades.filter(t => now - t.timeS < 86400).reduce((s, t) => s + t.profit, 0);
+  return {
+    ...result,
+    pnlAll: result.stats.pnlAll,
+    pnl24h: +pnl24h.toFixed(2),
+    totalTrades: result.stats.totalTrades,
+    wins: result.stats.wins,
+    losses: result.stats.losses,
+    winRate: result.stats.winRate,
+  };
+}
+
+// ---- Live Copy (polling) ----
+// NOTE: Polymarket has NO public websocket that streams another user's trades.
+// The market channel (ws-subscriptions-clob.polymarket.com/ws/market) requires
+// knowing specific asset_ids (token IDs), and doesn't tell you WHO made the trade.
+// The user channel requires CLOB auth keys (private, for your own account).
+//
+// For tracking another trader, the fastest approach is polling
+// /closed-positions?user=&after_timestamp= at minimal latency.
+// At 3s polling, worst-case lag is 3 seconds — sufficient for copy trading.
+
+export async function pollNewClosedPositions(
+  user: string,
+  afterTs: number,
+): Promise<{ conditionId: string; title: string; outcomeIndex: number; totalBought: number; realizedPnl: number; timestamp: number }[]> {
+  // /closed-positions doesn't support after_timestamp query param,
+  // so we fetch recent and filter client-side
+  const res = await getJson(`${BASE}/closed-positions?user=${user}&limit=10&sortBy=TIMESTAMP&sortDirection=DESC`);
+  const items = Array.isArray(res) ? res : [];
+  return items
+    .filter((p: any) => (p.timestamp || 0) > afterTs)
+    .map((p: any) => ({
+      conditionId: p.conditionId || '',
+      title: p.title || '?',
+      outcomeIndex: p.outcomeIndex ?? -1,
+      totalBought: +(p.totalBought || 0),
+      realizedPnl: +(p.realizedPnl || 0),
+      timestamp: p.timestamp || 0,
+    }));
+}
+
 export function applyLiveTrade(
-  cp: { conditionId?: string; title?: string; outcomeIndex?: number; totalBought?: number; realizedPnl?: number; timestamp?: number },
-  liveState: LiveState,
+  cp: { conditionId: string; title: string; outcomeIndex: number; totalBought: number; realizedPnl: number; timestamp: number },
+  state: { balance: number; trades: SimTrade[]; wins: number; losses: number; exposure: Record<string, number> },
   tradeAmount: number,
   maxPerMarket: number,
-): boolean {
-  const mKey = cp.conditionId || `live-${liveState.trades.length}`;
-  const side = cp.outcomeIndex === 0 ? 'YES' : 'NO';
-  const roiPct = cp.totalBought && cp.totalBought > 0
-    ? (cp.realizedPnl! / cp.totalBought) * 100 : 0;
-  const exposure = liveState._exposure?.[mKey] || 0;
-  if (exposure >= maxPerMarket || liveState.balance < tradeAmount) return false;
+): SimTrade | null {
+  const exp = state.exposure[cp.conditionId] || 0;
+  if (exp >= maxPerMarket || state.balance < tradeAmount) return null;
 
-  liveState._exposure = liveState._exposure || {};
-  liveState._exposure[mKey] = exposure + tradeAmount;
-  const profit = tradeAmount * (roiPct / 100);
-  liveState.balance += profit;
-  liveState._exposure[mKey] = Math.max(0, liveState._exposure[mKey] - tradeAmount);
+  state.exposure[cp.conditionId] = exp + tradeAmount;
+  const roi = cp.totalBought > 0 ? (cp.realizedPnl / cp.totalBought) * 100 : 0;
+  const profit = +((tradeAmount * roi) / 100).toFixed(2);
+  state.balance = +(state.balance + profit).toFixed(2);
+  state.exposure[cp.conditionId] = Math.max(0, state.exposure[cp.conditionId] - tradeAmount);
 
-  if (profit > 0) liveState.totalWins++;
-  else if (profit < 0) liveState.totalLosses++;
+  if (profit > 0.001) state.wins++;
+  else if (profit < -0.001) state.losses++;
 
-  const ts = cp.timestamp || 0;
+  const ts = cp.timestamp;
   const d = new Date(ts * 1000);
-  const dateStr = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-
-  liveState.trades.push({
-    id: `live-${liveState.trades.length}`,
-    title: cp.title || 'Unknown', side, amount: tradeAmount,
-    roi: parseFloat(roiPct.toFixed(1)), profit: parseFloat(profit.toFixed(2)),
-    balanceAfter: parseFloat(liveState.balance.toFixed(2)), time: ts, dateStr,
-  });
-  return true;
-}
-
-export function getLiveStats(ls: LiveState) {
-  const now = Date.now() / 1000;
-  const total = ls.totalWins + ls.totalLosses;
-  const pnlAll = ls.trades.reduce((s, t) => s + t.profit, 0);
-  const pnl24 = ls.trades.filter(t => now - t.time <= 86400).reduce((s, t) => s + t.profit, 0);
-  const pnl7 = ls.trades.filter(t => now - t.time <= 604800).reduce((s, t) => s + t.profit, 0);
-  const pnl30 = ls.trades.filter(t => now - t.time <= 2592000).reduce((s, t) => s + t.profit, 0);
-  return {
-    balance: parseFloat(ls.balance.toFixed(2)),
-    pnl24h: parseFloat(pnl24.toFixed(2)), pnl7d: parseFloat(pnl7.toFixed(2)),
-    pnl30d: parseFloat(pnl30.toFixed(2)), pnlAll: parseFloat(pnlAll.toFixed(2)),
-    totalTrades: total, wins: ls.totalWins, losses: ls.totalLosses,
-    winRate: total > 0 ? parseFloat(((ls.totalWins / total) * 100).toFixed(1)) : 0,
+  const trade: SimTrade = {
+    id: `live${state.trades.length}`,
+    title: cp.title || '?',
+    side: sideName(cp.outcomeIndex),
+    amount: tradeAmount,
+    roi: +roi.toFixed(1),
+    profit,
+    balanceAfter: state.balance,
+    timeS: ts,
+    dateStr: d.toLocaleDateString('en-GB', { timeZone: 'Europe/Vilnius', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
   };
+  state.trades.push(trade);
+  return trade;
 }
