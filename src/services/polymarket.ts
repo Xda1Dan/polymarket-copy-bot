@@ -325,18 +325,26 @@ export async function getPositionsList(user: string): Promise<OpenPosition[]> {
   }));
 }
 
+/** Fetch recent trades using /trades endpoint (real-time, no lag) */
+export async function fetchRecentTradesRealtime(user: string, limit = 50): Promise<any[]> {
+  let url = `${BASE}/trades?user=${user}&limit=${limit}&sortBy=TIMESTAMP&sortDirection=DESC`;
+  const data = await getJson(url);
+  return Array.isArray(data) ? data : [];
+}
+
+/** Get closed positions list — now uses /trades for real-time data instead of lagged /closed-positions */
 export async function getClosedList(user: string, limit = 100): Promise<ClosedPosition[]> {
-  const raw = await fetchClosedPositions(user);
-  return raw.slice(0, limit).map((p: any) => ({
-    id: `${p.conditionId}-${p.timestamp}`,
-    title: p.title || 'Unknown',
-    icon: p.icon || '',
-    side: sideName(p.outcomeIndex),
-    size: +(p.totalBought || 0),
-    avgPrice: p.avgPrice || 0,
-    realizedPnl: +(p.realizedPnl || 0),
-    timestamp: p.timestamp || 0,
-    dateStr: lithuanianDate(p.timestamp, true),
+  const raw = await fetchRecentTradesRealtime(user, limit);
+  return raw.map((t: any) => ({
+    id: `${t.conditionId || 'unknown'}-${t.timestamp}`,
+    title: t.title || 'Unknown',
+    icon: t.icon || '',
+    side: t.side || (t.outcomeIndex === 0 ? 'YES' : 'NO'),
+    size: +(t.size || t.totalBought || 0),
+    avgPrice: t.avgPrice || t.price || 0,
+    realizedPnl: +(t.realizedPnl || 0),
+    timestamp: t.timestamp || 0,
+    dateStr: lithuanianDate(t.timestamp || 0, true),
   }));
 }
 
@@ -514,21 +522,22 @@ export async function runHistoricalSimulation(user: string, initial: number, tra
 // /closed-positions?user=&after_timestamp= at minimal latency.
 // At 3s polling, worst-case lag is 3 seconds — sufficient for copy trading.
 
+/** Poll for new trades — uses /trades (real-time, no 2h lag from /closed-positions) */
 export async function pollNewClosedPositions(
   user: string,
   afterTs: number,
 ): Promise<{ conditionId: string; title: string; outcomeIndex: number; totalBought: number; realizedPnl: number; timestamp: number }[]> {
-  const res = await getJson(`${BASE}/closed-positions?user=${user}&limit=10&sortBy=TIMESTAMP&sortDirection=DESC`);
+  const res = await getJson(`${BASE}/trades?user=${user}&limit=20&sortBy=TIMESTAMP&sortDirection=DESC`);
   const items = Array.isArray(res) ? res : [];
   return items
-    .filter((p: any) => (p.timestamp || 0) > afterTs)
-    .map((p: any) => ({
-      conditionId: p.conditionId || '',
-      title: p.title || '?',
-      outcomeIndex: p.outcomeIndex ?? -1,
-      totalBought: +(p.totalBought || 0),
-      realizedPnl: +(p.realizedPnl || 0),
-      timestamp: p.timestamp || 0,
+    .filter((t: any) => (t.timestamp || 0) > afterTs)
+    .map((t: any) => ({
+      conditionId: t.conditionId || '',
+      title: t.title || '?',
+      outcomeIndex: t.outcomeIndex ?? 0,
+      totalBought: +(t.size || t.totalBought || 0),
+      realizedPnl: +(t.realizedPnl || 0),
+      timestamp: t.timestamp || 0,
     }));
 }
 
