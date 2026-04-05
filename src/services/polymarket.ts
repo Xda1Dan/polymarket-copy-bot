@@ -6,7 +6,7 @@
 //
 // Key endpoints:
 //   GET /closed-positions?user=&limit=&offset=&sortBy=TIMESTAMP
-//   GET /positions?user=&limit=...
+//   GET /positions?user=&limit=...       (NO sort params supported!)
 //   GET /trades?user=&limit=&after_timestamp=&side=BUY
 //   GET /activity?user=&limit=&after_timestamp=
 //   GET /leaderboard/rankings - top traders
@@ -100,7 +100,7 @@ export interface PerfPoint {
   time: number;
   value: number;
   label: string;
-  ts: number; // raw seconds for filtering
+  ts: number;
 }
 
 export interface SimResult {
@@ -157,11 +157,17 @@ async function getJson(url: string): Promise<any> {
   return res.json();
 }
 
-async function fetchPaginated(endpoint: string, user: string): Promise<any[]> {
+/**
+ * Fetch paginated data from a Polymarket endpoint.
+ * @param sortable — if true, adds sortBy/sortDirection params.
+ *   `/closed-positions` supports sorting. `/positions` does NOT.
+ */
+async function fetchPaginated(endpoint: string, user: string, sortable = false): Promise<any[]> {
   let all: any[] = [];
   let offset = 0;
   for (let page = 0; page < 40; page++) {
-    const url = `${BASE}/${endpoint}?user=${user}&limit=50&offset=${offset}&sortBy=TIMESTAMP&sortDirection=DESC`;
+    let url = `${BASE}/${endpoint}?user=${user}&limit=50&offset=${offset}`;
+    if (sortable) url += `&sortBy=TIMESTAMP&sortDirection=DESC`;
     const data = await getJson(url);
     const items = Array.isArray(data) ? data : [];
     if (!items.length) break;
@@ -190,16 +196,17 @@ export function invalidateCache(user: string) {
 
 // ---- Public API ----
 
-export async function fetchClosedPositions(user: string, cached = true): Promise<RawClosedPosition[]> {
+export async function fetchClosedPositions(user: string, useCached = true): Promise<RawClosedPosition[]> {
   const key = `closed_${user}`;
-  if (cached) {
-    return cached(key, () => fetchPaginated('closed-positions', user));
+  if (useCached) {
+    return cached(key, () => fetchPaginated('closed-positions', user, true));
   }
-  return fetchPaginated('closed-positions', user);
+  return fetchPaginated('closed-positions', user, true);
 }
 
 export async function fetchOpenPositions(user: string): Promise<RawOpenPosition[]> {
-  const positions = await fetchPaginated('positions', user);
+  // /positions does NOT support sortBy params!
+  const positions = await fetchPaginated('positions', user, false);
   return positions.filter((p: any) => p.size && p.size > 0);
 }
 
@@ -210,7 +217,6 @@ export async function fetchRecentTrades(user: string, afterTs?: number): Promise
   return Array.isArray(data) ? data : [];
 }
 
-/** Quick validation — does this address have any trading history? */
 export async function addressExists(user: string): Promise<boolean> {
   try {
     const data = await getJson(`${BASE}/trades?user=${user}&limit=1`);
@@ -504,8 +510,6 @@ export async function pollNewClosedPositions(
   user: string,
   afterTs: number,
 ): Promise<{ conditionId: string; title: string; outcomeIndex: number; totalBought: number; realizedPnl: number; timestamp: number }[]> {
-  // /closed-positions doesn't support after_timestamp query param,
-  // so we fetch recent and filter client-side
   const res = await getJson(`${BASE}/closed-positions?user=${user}&limit=10&sortBy=TIMESTAMP&sortDirection=DESC`);
   const items = Array.isArray(res) ? res : [];
   return items
