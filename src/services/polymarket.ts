@@ -443,19 +443,18 @@ export function getLiveStats(live: LiveState) {
 }
 
 export async function lookupTrader(address: string): Promise<{ address: string; name: string; pseudonym: string }> {
-  // Try profile endpoint first
+  // Try Gamma API public profile first
   try {
-    const profile = await getJson(`${BASE}/profile/${address}`);
-    if (profile) {
-      const name = profile.name || profile.pseudonym || profile.username || '';
-      return { address, name, pseudonym: profile.pseudonym || '' };
+    const profile = await getJson(`https://gamma-api.polymarket.com/public-profile?address=${address}`);
+    if (profile && profile.name) {
+      return { address, name: profile.name, pseudonym: profile.pseudonym || '' };
     }
   } catch { /* ignore */ }
   // Fallback: grab pseudonym from trades
   try {
     const data = await getJson(`${BASE}/trades?user=${address}&limit=1`);
     if (Array.isArray(data) && data.length > 0) {
-      return { address, name: data[0]?.pseudonym || '', pseudonym: data[0]?.pseudonym || '' };
+      return { address, name: data[0]?.pseudonym || data[0]?.name || '', pseudonym: data[0]?.pseudonym || '' };
     }
   } catch { /* ignore */ }
   return { address, name: '', pseudonym: '' };
