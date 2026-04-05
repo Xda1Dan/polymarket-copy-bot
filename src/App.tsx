@@ -28,7 +28,6 @@ import {
   Tooltip, 
   ResponsiveContainer 
 } from 'recharts';
-import axios from 'axios';
 import { cn, formatCurrency, formatAddress } from './lib/utils';
 import { fetchTraderTrades, getTraderStats, PolymarketTrade, TraderStats } from './services/polymarket';
 
@@ -43,6 +42,16 @@ interface BotInstance {
   maxPerMarket: number;
   createdAt: string;
 }
+
+const BOTS_KEY = 'polysim_bots';
+
+const loadBots = (): BotInstance[] => {
+  try { return JSON.parse(localStorage.getItem(BOTS_KEY) || '[]'); } catch { return []; }
+};
+
+const saveBots = (all: BotInstance[]) => {
+  localStorage.setItem(BOTS_KEY, JSON.stringify(all));
+};
 
 export default function App() {
   const [bots, setBots] = useState<BotInstance[]>([]);
@@ -63,7 +72,8 @@ export default function App() {
   const selectedBot = bots.find(b => b.id === selectedBotId);
 
   useEffect(() => {
-    fetchBots();
+    setBots(loadBots());
+    setIsLoading(false);
   }, []);
 
   useEffect(() => {
@@ -89,19 +99,7 @@ export default function App() {
     }
   }, [selectedBotId]);
 
-  const fetchBots = async () => {
-    try {
-      const res = await axios.get('/api/bots');
-      setBots(res.data);
-      if (res.data.length > 0 && !selectedBotId) {
-        setSelectedBotId(res.data[0].id);
-      }
-    } catch (err) {
-      console.error('Failed to fetch bots', err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+
 
   const loadTraderData = async (address: string) => {
     setIsLoading(true);
@@ -119,41 +117,33 @@ export default function App() {
     }
   };
 
-  const handleAddBot = async (e: React.FormEvent) => {
+  const handleAddBot = (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      const res = await axios.post('/api/bots', {
-        name: newBotData.name,
-        traderAddress: newBotData.address,
-        initialBalance: newBotData.balance,
-        tradeAmount: newBotData.tradeAmount,
-        maxPerMarket: newBotData.maxPerMarket
-      });
-      setBots([...bots, res.data]);
-      setIsAddingBot(false);
-      setNewBotData({ 
-        name: '', 
-        address: '', 
-        balance: '1000',
-        tradeAmount: '50',
-        maxPerMarket: '200'
-      });
-      setSelectedBotId(res.data.id);
-    } catch (err) {
-      console.error('Failed to add bot', err);
-    }
+    const newBot: BotInstance = {
+      id: Math.random().toString(36).substring(7),
+      name: newBotData.name,
+      traderAddress: newBotData.address,
+      status: 'active',
+      virtualBalance: Number(newBotData.balance) || 1000,
+      initialBalance: Number(newBotData.balance) || 1000,
+      tradeAmount: Number(newBotData.tradeAmount) || 50,
+      maxPerMarket: Number(newBotData.maxPerMarket) || 200,
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [...bots, newBot];
+    setBots(updated);
+    saveBots(updated);
+    setIsAddingBot(false);
+    setNewBotData({ name: '', address: '', balance: '1000', tradeAmount: '50', maxPerMarket: '200' });
+    setSelectedBotId(newBot.id);
   };
 
-  const deleteBot = async (id: string) => {
-    try {
-      await axios.delete(`/api/bots/${id}`);
-      const updatedBots = bots.filter(b => b.id !== id);
-      setBots(updatedBots);
-      if (selectedBotId === id) {
-        setSelectedBotId(updatedBots.length > 0 ? updatedBots[0].id : null);
-      }
-    } catch (err) {
-      console.error('Failed to delete bot', err);
+  const deleteBot = (id: string) => {
+    const updated = bots.filter(b => b.id !== id);
+    setBots(updated);
+    saveBots(updated);
+    if (selectedBotId === id) {
+      setSelectedBotId(updated.length > 0 ? updated[0].id : null);
     }
   };
 
