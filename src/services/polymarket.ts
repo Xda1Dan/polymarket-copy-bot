@@ -99,7 +99,7 @@ export interface TraderStats {
 export interface PerfPoint {
   time: number;
   value: number;
-  label: string;
+  dateStr: string;
   ts: number;
 }
 
@@ -297,7 +297,7 @@ export async function getPerfData(user: string, period: ChartPeriod): Promise<Pe
     data.push({
       time: ts * 1000,
       value: +cumulative.toFixed(2),
-      label: hrs
+      dateStr: hrs
         ? new Date(ts * 1000).toLocaleTimeString('en-GB', { timeZone: 'Europe/Vilnius', hour: '2-digit', minute: '2-digit' })
         : new Date(ts * 1000).toLocaleDateString('en-GB', { timeZone: 'Europe/Vilnius', day: '2-digit', month: 'short' }),
       ts,
@@ -395,7 +395,7 @@ export async function simulateHistory(
     perf.push({
       time: ts * 1000,
       value: +balance.toFixed(2),
-      label: d.toLocaleDateString('en-GB', { timeZone: 'Europe/Vilnius', day: '2-digit', month: 'short' }),
+      dateStr: d.toLocaleDateString('en-GB', { timeZone: 'Europe/Vilnius', day: '2-digit', month: 'short' }),
       ts,
     });
   }
@@ -443,6 +443,15 @@ export function getLiveStats(live: LiveState) {
 }
 
 export async function lookupTrader(address: string): Promise<{ address: string; name: string; pseudonym: string }> {
+  // Try profile endpoint first
+  try {
+    const profile = await getJson(`${BASE}/profile/${address}`);
+    if (profile) {
+      const name = profile.name || profile.pseudonym || profile.username || '';
+      return { address, name, pseudonym: profile.pseudonym || '' };
+    }
+  } catch { /* ignore */ }
+  // Fallback: grab pseudonym from trades
   try {
     const data = await getJson(`${BASE}/trades?user=${address}&limit=1`);
     if (Array.isArray(data) && data.length > 0) {
@@ -526,18 +535,22 @@ export async function pollNewClosedPositions(
 
 export function applyLiveTrade(
   cp: { conditionId: string; title: string; outcomeIndex: number; totalBought: number; realizedPnl: number; timestamp: number },
-  state: { balance: number; trades: SimTrade[]; wins: number; losses: number; exposure: Record<string, number> },
+  state: { balance: number; trades: SimTrade[]; wins: number; losses: number; _exposure?: Record<string, number>; exposure?: Record<string, number> },
   tradeAmount: number,
   maxPerMarket: number,
 ): SimTrade | null {
-  const exp = state.exposure[cp.conditionId] || 0;
+  const exposure = state._exposure || state.exposure || {};
+  const exp = exposure[cp.conditionId] || 0;
   if (exp >= maxPerMarket || state.balance < tradeAmount) return null;
 
-  state.exposure[cp.conditionId] = exp + tradeAmount;
+  exposure[cp.conditionId] = exp + tradeAmount;
   const roi = cp.totalBought > 0 ? (cp.realizedPnl / cp.totalBought) * 100 : 0;
   const profit = +((tradeAmount * roi) / 100).toFixed(2);
   state.balance = +(state.balance + profit).toFixed(2);
-  state.exposure[cp.conditionId] = Math.max(0, state.exposure[cp.conditionId] - tradeAmount);
+  exposure[cp.conditionId] = Math.max(0, exposure[cp.conditionId] - tradeAmount);
+  // Sync back
+  if (state._exposure) state._exposure = exposure;
+  if (state.exposure) state.exposure = exposure;
 
   if (profit > 0.001) state.wins++;
   else if (profit < -0.001) state.losses++;
